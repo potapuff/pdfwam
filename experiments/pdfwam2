@@ -1,0 +1,379 @@
+#!/usr/bin/env python
+# -- coding: utf-8
+
+#      Copyright 2005, 2006, 2007, 2008 EIAO Consoritum
+#      This program is distributed under the terms of the GNU General
+#      Public License.
+#
+#  This file is part of the European Internet Accessibility Observatory
+#  (EIAO)
+#
+#  EIAO is free software; you can redistribute it and/or modify
+#  it under the terms of the GNU General Public License as published by
+#  the Free Software Foundation; either version 2 of the License, or
+#  (at your option) any later version.
+#
+#  EIAO is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#  GNU General Public License for more details.
+#
+#  You should have received a copy of the GNU General Public License
+#  along with EIAO; if not, write to the Free Software
+#  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston,
+#  MA 02110-1301 USA
+
+"""
+PDF WAM server based on Tornado web-services
+"""
+
+# For logging
+from __future__ import with_statement
+
+import sys, os
+from wamlogger import WAMLogger, WAMLoggerFactory
+import wam_container
+import version
+import base64
+import urllib
+import urllib2
+import pdfAWAM
+import StringIO
+
+from phpserialize import dumps as php_serialize
+from TingtunUtils.bench import bench
+from TingtunUtils.daemonize import daemonize, drop_privileges
+from TingtunUtils.urldownload import UrlDownloader, HeadRequest
+from TingtunUtils.forkmixin import ForkMixin
+
+import tornado.httpserver
+import tornado.ioloop
+from tornadows import soaphandler
+from tornadows import xmltypes
+from tornadows import webservices
+from tornadows import complextypes
+from tornadows.soaphandler import webservice
+
+reload(sys)
+sys.setdefaultencoding('utf-8')
+
+__author__ = "Anand B Pillai"
+__maintainer__ = "Anand B Pillai"
+__version__ = "$Id$"
+
+LOGFILE="/var/log/egovmon/pdfwam2.log"
+
+class SingletonMeta(type):
+    """ A type for Singleton classes """    
+
+    def __init__(cls, *args):
+        type.__init__(cls, *args)
+        cls.instance = None
+
+    def __call__(cls, *args):
+        if not cls.instance:
+            cls.instance = type.__call__(cls, *args)
+        return cls.instance
+    
+
+class PdfWamHelper(object):
+    """ Pdf wam helper class which initializes
+    a few objects required for the web service
+    classes """
+
+    # This is a singleton because it needs to intialize
+    # only once
+    __metaclass__ = SingletonMeta
+
+    @classmethod
+    def getInstance(cls, *args):
+        return cls(*args)
+    
+    def __init__(self):
+        """ Initialize objects required for PDF-WAM
+        web services """
+
+        # URL caching config
+        import sc
+        cfg = sc.SystemConfiguration()
+        
+        self.cacheurl = int(cfg.pdfwamurlcache)
+        self.cachefolder = ''
+        self.cachettl = 0
+        
+        if self.cacheurl:
+            # Read ttl, folder etc
+            self.cachefolder = cfg.pdfwamurlcachefolder
+            self.cachettl = int(cfg.pdfwamurlcachettl)
+            # Create cache directories
+            UrlDownloader.createCacheFolders(self.cachefolder)
+
+        pdfserver = cfg.pdfwamservers
+        port = int(pdfserver.rsplit(':', 1)[-1]) + 1
+        
+        file,suffix=version.dumpfile.split(".")
+        wam_container.setDumpFile(file+str(port)+"."+suffix)
+        
+        # Get logger
+        self.logger = WAMLoggerFactory().getWamLogger(WAMLogger.INFO,LOGFILE)
+        wam_container.setLogger(self.logger)
+
+class PdfWamHelperWrapper(object):
+    """ Wrapper for pdf-wam helper class. This allows for
+    transparent attribute routing to the enclosed PdfWamHelper
+    single instance """
+    
+    helper = PdfWamHelper.getInstance()
+
+    def __getattr__(self, name):
+        try:
+            return self.__dict__[name]
+        except KeyError:
+            return getattr(self.helper, name)
+
+class PdfWamService(soaphandler.SoapHandler, PdfWamHelperWrapper):
+    """Web service handler class for PDF Wam 
+    """
+
+    def __init__(self, instance, request, **kwargs):
+        soaphandler.SoapHandler.__init__(self, instance, request, **kwargs)
+        self.logger.info("EIAO PDF WAM server-handler version %s" % (__version__,))
+
+    def fetch_pdf_error(self):
+        """ Fetch error in processing a PDF file from
+        the pdf-wam back-end """
+
+        if os.path.isfile('.pdferror'):
+            return open('.pdferror').read()
+        return ''
+
+    @webservice(_params=xmltypes.String,_returns=xmltypes.String)        
+    def checkacc(self, param0=None):
+        """ Check metod for the PDF-eAccessibility checker
+        """
+        if not param0.startswith('http'):
+            param0 = 'http://' + param0
+        try:
+            it = self.__check(param0)
+        except Exception, e:
+            import traceback
+            traceback.print_exc()
+
+        if type(it) != type({}):
+            return php_serialize({'downloadok': 0, 'error': 'Invalid WAM result.'})
+
+        # Inconsistent: We should not be looking just for the specific error
+        # "Unsupported" content type but setting invalidCType to 
+        # True, if validok is False
+        if it.get('downloadok')==False and it.get('error'):
+            print 'Downloadok is False!'
+            it['invalidCType'] = True
+        
+        elif it.get('validok')==False and it.get('error'):
+            print 'Validok is False!'            
+            it['invalidCType'] = True
+
+        # print "Keys =>", it.keys()
+        it['header']=''
+        return php_serialize(eval(repr(it).replace('\\r', '')))
+    
+    def check(self, *args, **kwargs):
+        # This end-point is not used - only for testing
+        return repr(self.__check(*args, **kwargs))
+ 
+    def __check(self,url,cont=None,contentType='application/pdf',encoding='utf-8',ruleset=None,httpheader={},compression=None):
+        # Ruleset is a list indicating the id of the enabled BWAM/MWAM rules.
+        # ruleset=None means all rules enabled.
+        if ruleset==None:
+            ruleset = ["ALL"]
+        elif type(ruleset) == str and ruleset.upper() == "ALL":
+            ruleset = ["ALL"]
+
+        # Error result
+        errdict = {'result': {}, 'error': ''}
+        
+        fetcher = None
+        if cont==None:
+            # No content passed in, try to download URL directly
+            fetcher = UrlDownloader(url, self.logger, self.cacheurl, self.cachefolder, self.cachettl)
+            if fetcher.download():
+                self.logger.info('Downloaded',url,'successfully')
+                httpheader = fetcher.headers
+                cont = fetcher.data
+            else:
+                self.logger.info('Failed to download',url)                
+                errdict['downloadok']=False
+                self.logger.info(fetcher.error)
+                errdict['error']=fetcher.error
+                return errdict
+
+        # Assert that content really is PDF.
+        if cont[0:4].upper()!="%PDF":
+            # This is not PDF, cannot evaluate it with PDF WAM.
+            self.logger.warning("This document is not PDF: "+url)
+            errdict['downloadok']=True
+            errdict['validok']=False
+            errdict['error']='The document is not PDF'
+            return errdict
+
+        if compression=="base64":
+            # Decompress compressed data stream
+            cont=base64.decodestring(cont)
+            
+        resultMap=None
+        resultDict={}
+                
+        self.logger.debug(url,cont,contentType,encoding)
+        
+        self.logger.info('Evaluating:',urllib.unquote(url))
+        print '\nEvaluating:',urllib.unquote(url)
+        
+        if contentType.lower() in ('application/pdf'):
+            # Extract PDF AWAM indicators
+            resultMap=pdfAWAM.extractAWAMIndicators(StringIO.StringIO(cont), password='')
+            print resultMap
+        else:
+            # Other content types not supported.
+            self.logger.error("PDF WAM unsupported contentType: "+contentType)
+            resultDict['validok']=False
+            resultDict['error'] = 'Unsupported content type '+contentType
+            # Inconsistent: return resultDict right away cuz of error
+            return resultDict
+        
+        if resultMap == None:
+            self.logger.error("resultMap from AWAM is NULL. Check if validation failed for "+url)
+            resultDict['validok']=False
+            resultDict['error']='Resultmap from AWAM is NULL, validation failed'
+            # Inconsistent: return resultDict right away cuz of error
+            return resultDict            
+        else:
+            resultDict['validok']=True
+
+        if resultMap == {}:
+            # Ticket 127 fix
+            print 'Empty resultmap!'
+            # Read file .pdferror and return its contents as error message
+            resultDict['validok'] = False
+            resultDict['error']=self.fetch_pdf_error()
+            # Inconsistent: return resultDict right away cuz of error
+            return resultDict
+        
+        # This WAM result format handling is non-standard, but kept for
+        # backwards compatibility with the EIAO Observatory.
+        # It was initially a hack to save time...
+        # Consider refactoring it in the future.
+        resultDict["result"]=wam_container.bwams(url,resultMap,["pdfbwam_wcag","pdfmwam"],ruleset)
+        f = open('earltemp','w')
+        f.write(str(resultDict["result"]))
+        f.close()
+        try:
+            # This sometimes cause problems because the original header
+            # might contain data which cant be encoded in ascii, leading
+            # to obscure bugs. E.g: 136
+            headers = fetcher.headers.encode('ascii','replace').decode('ascii','replace')
+            resultDict["header"]=headers
+        except:
+            pass
+
+        try:
+            resultDict["downloadok"]=True
+        except:
+            pass
+
+        # return {}
+        return resultDict
+
+
+class PdfContentService(soaphandler.SoapHandler, PdfWamHelperWrapper):
+    """
+    Web service class for PDF content serving
+    """
+
+    def __init__(self, instance, request, **kwargs):
+        soaphandler.SoapHandler.__init__(self, instance, request, **kwargs)
+        self.logger.info("EIAO PDF Content server-handler version %s" % (__version__,))
+
+    @webservice(_params=xmltypes.String,_returns=xmltypes.String)
+    def getPDFContent(self, param0=None):
+        if not param0.startswith('http'):
+            param0 = 'http://' + param0
+
+        return self.__getPDFContent(param0)
+
+    def __getPDFContent(self, url):
+        """ Return downloaded PDF content for already processed URLs.
+        99.99% of the time this would be served from the disk-cache
+        in compressed form """
+
+        fetcher = UrlDownloader(url, self.logger, self.cacheurl, self.cachefolder, self.cachettl)
+        # The interface is still download - caching is taken
+        # care internally to this function. This function doesn't
+        # care if the data is returned fresh or from cache.
+        resultdict = {}
+        
+        if fetcher.download(compress=True):
+            try:
+                actualhdrs = fetcher.headers.split("\n")
+                # Check for Content-type and over-write the corret header value
+                idx, done = -1, False
+                for hdr in actualhdrs:
+                    idx += 1
+                    if len(hdr)==0: continue
+                    key, val = hdr.split(':', 1)
+                    if key.lower() == 'content-type':
+                        actualhdrs[idx] = 'Content-Type: application/pdf\r'
+                        done = True
+                        break
+                if not done:
+                    actualhdrs.append('Content-Type: application/pdf\r')
+                httpheader = '\n'.join([item for item in actualhdrs if item])
+            except:
+                httpheader = fetcher.headers                
+
+            cont = fetcher.data
+            pdfdict = {}
+            pdfdict['downloadok']=True
+            pdfdict['validok']=True
+            pdfdict['error']=''
+
+            with bench.bench('base64encode_' + url):
+                pdfdict['result'] = base64.b64encode(cont)
+            try:
+                pdfdict['headers']=httpheader.encode('ascii','replace').decode('ascii','replace')
+            except:
+                pass
+            
+            resultdict = pdfdict
+        else:
+            errdict = {}
+            errdict['downloadok']=False
+            errdict['validok']=False
+            errdict['error']='The PDF file could not be downloaded or fetched from cache'
+            errdict['result']=''
+            resultdict = errdict
+
+        with bench.bench('phpserialize_' + url):
+            result=php_serialize(eval(repr(resultdict).replace('\\r', '')))
+            return result
+    
+if __name__ == "__main__":
+    import sc
+    cfg = sc.SystemConfiguration()
+
+    # Get port number from arguments
+    try:
+        port=int(sys.argv[sys.argv.index("-p")+1])
+    except:
+        pdfserver = cfg.pdfwamservers
+        port = int(pdfserver.rsplit(':', 1)[-1]) + 1
+        print port
+        
+    if not "--recompile" in sys.argv:
+        print "Starting PDF WAM Server."
+        # daemonize('/var/run/pdfwam.pid', '/var/log/egovmon/pdfWAMStdOutAndErr2.log')
+        service = [('PdfWamService', PdfWamService),
+                   ('PdfContentService', PdfContentService)]
+        app = webservices.WebService(service)
+        ws  = tornado.httpserver.HTTPServer(app)
+        ws.listen(port)
+        tornado.ioloop.IOLoop.instance().start()

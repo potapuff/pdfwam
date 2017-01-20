@@ -1,0 +1,136 @@
+---------------------------------
+Egovmon PDF accessibility checker
+---------------------------------
+
+This consists of a command-line PDF checker and
+a SOAP based PDF wam and associated tools.
+
+Checker Tools
+-------------
+1. pdfchecker.py - Command-line tool to evaluate a PDF
+file and print out an optional report summarizing the
+test results. Can be used for debugging during development
+as well as for testing and verifying.
+
+$ python pdfchecker.py
+Usage: pdfchecker.py [options] pdffile - Check PDF documents for accessibility
+
+Options:
+  -h, --help            show this help message and exit
+  -p PASSWORD, --password=PASSWORD
+                        Optional password for encrypted PDF
+  -q, --quiet           Be quiet, won't print debug/informational messages
+  -r, --report          Print a report of test results at the end
+
+By default, this prints a summary for the PDF file plus
+a lot of evaluation debug messages. This can be turned
+off using the "-q" option.
+
+Examples:
+
+$ python pdfchecker.py testfiles/wcag.pdf.14/header_footer_pass.pdf -q
+Processed in 0.36 seconds
+
+***AWAM Dictionary***
+{'EGOVMON.PDF.PROP.05': {(0, 1): "D:20110207132902-05'00'"}, 'EGOVMON.PDF.PROP.04': {(0, 1): "D:20110207132901-05'00'"}, 'EIAO.A.15.1.1.4.PDF.1.1': {(0, 1): 1}, 'EGOVMON.PDF.PROP.06': {(0, 1): 'Adobe PDF Library 9.0'}, 'EGOVMON.PDF.PROP.01': {(0, 1): 'Test Document'}, 'EIAO.A.10.3.1.4.PDF.1.1': {(0, 1): 1}, 'EIAO.A.10.4.1.4.PDF.1.1': {(0, 1): 0}, 'EGOVMON.PDF.PROP.02': {(0, 1): 'Mary'}, 'EGOVMON.PDF.PROP.07': {(0, 1): 'Acrobat PDFMaker 9.0 for Word'}, 'EIAO.A.10.3.2.4.PDF.1.1': {(0, 1): 1}, 'EIAO.A.10.13.3.4.PDF.1.1': {(0, 1): 1}, 'EGOVMON.A.WCAG.PDF.14': {(5, 4): 1, (3, 2): 1, (4, 3): 1, (2, 1): 1}, 'EIAO.A.10.3.5.4.PDF.1.1': {(0, 1): 1}, 'EIAO.A.10.8.1.4.PDF.1.1': {(0, 1): 1}, 'EGOVMON.PDF.PROP.03': {(0, 1): '1.5'}, 'EGOVMON.A.WCAG.PDF.11': {(4, 12): 1, (3, 11): 1}, 'EGOVMON.A.WCAG.PDF.13': {(4, 12): 0, (3, 11): 0}}
+
+You can produce a report for the tests pass/fail status by passing
+the "-r" option.
+
+$ python pdfchecker.py testfiles/wcag.pdf.14/header_footer_pass.pdf -q -r
+Processed in 0.31 seconds
+
+***AWAM Dictionary***
+{'EGOVMON.PDF.PROP.05': {(0, 1): "D:20110207132902-05'00'"}, 'EGOVMON.PDF.PROP.04': {(0, 1): "D:20110207132901-05'00'"}, 'EIAO.A.15.1.1.4.PDF.1.1': {(0, 1): 1}, 'EGOVMON.PDF.PROP.06': {(0, 1): 'Adobe PDF Library 9.0'}, 'EGOVMON.PDF.PROP.01': {(0, 1): 'Test Document'}, 'EIAO.A.10.3.1.4.PDF.1.1': {(0, 1): 1}, 'EIAO.A.10.4.1.4.PDF.1.1': {(0, 1): 0}, 'EGOVMON.PDF.PROP.02': {(0, 1): 'Mary'}, 'EGOVMON.PDF.PROP.07': {(0, 1): 'Acrobat PDFMaker 9.0 for Word'}, 'EIAO.A.10.3.2.4.PDF.1.1': {(0, 1): 1}, 'EIAO.A.10.13.3.4.PDF.1.1': {(0, 1): 1}, 'EGOVMON.A.WCAG.PDF.14': {(5, 4): 1, (3, 2): 1, (4, 3): 1, (2, 1): 1}, 'EIAO.A.10.3.5.4.PDF.1.1': {(0, 1): 1}, 'EIAO.A.10.8.1.4.PDF.1.1': {(0, 1): 1}, 'EGOVMON.PDF.PROP.03': {(0, 1): '1.5'}, 'EGOVMON.A.WCAG.PDF.11': {(4, 12): 1, (3, 11): 1}, 'EGOVMON.A.WCAG.PDF.13': {(4, 12): 0, (3, 11): 0}}
+
+***Test Report***
+--------------------------------------------------------------------------------
+TEST                          | STATUS              | DESCRIPTION
+--------------------------------------------------------------------------------
+egovmon.pdf.03                | Pass                | structure tree
+wcag.pdf.14                   | Fail:0,Pass:4       | running headers/footers
+wcag.pdf.16                   | Fail                | natural language
+egovmon.pdf.05                | Pass                | permissions
+wcag.pdf.02                   | Pass                | bookmarks
+wcag.pdf.sc244                | Fail:0,Pass:2       | accessible external links
+egovmon.pdf.08                | Pass                | scanned
+wcag.pdf.18                   | Pass                | title
+wcag.pdf.09                   | Pass                | consistent headers
+--------------------------------------------------------------------------------
+Test summary: 13 total tests, 1 fail, 12 pass
+
+The test report will show the applied tests and their pass/fail
+status.
+
+2. pdfwam - The SOAP based PDF wam server. By default
+listens on port 8893 for requests. Exposes a method
+called "checkacc" for accessibility evaluation of a
+URI representing a PDF file. Returns a BWAM dictionary
+consisting of the evaluation results.
+
+Other Tools
+-----------
+Inside the "tools" folder.
+
+1. altImgs.py - Returns information on images that
+fail the Alt images test. 
+
+Examples:
+
+$ python altImgs.py ../testfiles/wcag.pdf.01/images-with-and-without-ALT.pdf  
+Pdf file has 1 images without Alt text in pages 1
+
+$ python altImgs.py ../testfiles/wcag.pdf.01/images-with-and-without-ALT_multipage.pdf 
+Pdf file has 1 images without Alt text in pages 2
+
+$ python altImgs.py ../testfiles/wcag.pdf.04/decorative-image.pdf 
+Pdf file has no failed images
+
+
+Tests
+-----
+A set of test PDF files are available in the "testfiles"
+folder. The files are organized according to the WCAG/Egovmon
+PDF test they are carrying out. 
+
+The script "runtests.py" runs all the unit-tests and prints
+out the result. If the PDF-WAM has no bugs, all unit-tests
+should pass.
+
+$ python runtests.py 
+...............
+----------------------------------------------------------------------
+Ran 15 tests in 28.299s
+
+OK
+
+Other Scripts
+-------------
+1. pdftest.py - Can be used to invoke PDF-WAM methods 
+for a PDF URI using a local or remote (default) WAM server.
+
+If 'test' is passed as argument, it uses a local WAM server
+else the default remote WAM server. The method by default is
+"check" which will result in the B-WAM dictionary getting
+printed for the URI to the console. If the method is passed
+as "get", it prints the content of the PDF file to console
+by invoking the "getPDFContent" method.
+
+Example:
+$ python pdftest.py http:// path to your test file /images-with-and-without-ALT.pdf
+No method given, assuming "check"...
+URL: http://path to your test file/images-with-and-without-ALT.pdf
+[ output truncated ]
+
+For testing the local WAM with a local file, you can use the "file:///" protocol. 
+
+Example:
+       
+# First start the local PDF wam - you need to have admin rights for this
+$ sudo python pdfwam 
+# Test using local path - full path required
+$ python pdftest.py test file:///home/dave/PdfWam/testfiles/wcag.pdf.01/images-with-and-without-ALT.pdf
+[ output truncated ]
+
+
+

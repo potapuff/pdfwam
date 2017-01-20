@@ -1,0 +1,7 @@
+#! /usr/bin/python -i
+
+import sys
+from pdfAWAM import *
+
+d=MyPdfFileReader(open(sys.argv[1]))
+d.read()

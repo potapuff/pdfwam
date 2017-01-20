@@ -1,0 +1,486 @@
+#!/usr/bin/env python
+# -- coding: utf-8
+
+# Copyright (C) Tingtun 2013.
+# 
+
+"""
+PDF WAM server
+"""
+
+# For logging
+from __future__ import with_statement
+
+import sys, os
+from wamlib import wam_container
+from errors import PdfWamProcessingError
+
+import version
+import base64
+import urllib
+import urlparse
+import urllib2
+import pdfAWAM
+import SOAPpy
+import StringIO
+# Local configuration - no more egovmon SystemConfiguration
+import config
+import optparse
+import resultscache
+import sqlite3
+
+from phpserialize import dumps as php_serialize
+from TingtunUtils.urldownload import UrlDownloader, HeadRequest
+from TingtunUtils.forkmixin import ForkMixin
+from TingtunUtils.daemonize import daemonize, drop_privileges
+from TingtunUtils.bench import bench
+import TingtunUtils.logger as logger
+
+reload(sys)
+sys.setdefaultencoding('utf-8')
+
+__author__ = "Anand B Pillai"
+__maintainer__ = "Anand B Pillai"
+__version__ = "2.0"
+
+__usage__= """%s [options]  - PDF WAM Server"""
+
+class ForkingSOAPServer(ForkMixin, SOAPpy.SOAPServer): pass
+
+class PDFWAMServer:
+    """Web service WAM server class
+    """
+
+    def __init__(self,
+                 host="0.0.0.0",
+                 port=8893,
+                 cache=True,
+                 console=False,
+                 loglevel='info'):
+        
+        """Initialises and starts the server
+        
+        Keyword arguments:
+        host -- [optional] Host to connect to, localhost if empty
+        port -- [optional] Port to connect to, 8893 if empty
+        cache -- [optional] Enable URL data caching (default: True)
+        console -- [optional] Console logging (default: False)
+        loglevel -- [optional] Logging level (default: info)
+        """
+        # Modify dumpfile to include port number, to allow for
+        # several WAM servers on the same machine
+
+        pdfserver = config.pdfwamservers
+        if port == 0:
+            pdfserver = config.pdfwamservers
+            port = int(pdfserver.rsplit(':', 1)[-1])
+
+        # Static files prefix
+        self.static_prefix = config.staticprefix
+        # URL caching config
+        self.cacheurl = int(config.pdfwamurlcache) and cache
+        self.cachefolder = ''
+        self.cachettl = 0
+        
+        if self.cacheurl:
+            # Read ttl, folder etc
+            self.cachefolder = config.pdfwamurlcachefolder
+            self.cachettl = int(config.pdfwamurlcachettl)
+            # Create cache directories
+            UrlDownloader.createCacheFolders(self.cachefolder)
+            
+        file,suffix=version.dumpfile.split(".")
+        wam_container.setDumpFile(file+str(port)+"."+suffix)
+        # Get logger
+        config.pdfwamloglevel = loglevel
+        
+        self.logger = logger.getLogger('pdfwam', config.pdfwamlogfile, level=config.pdfwamloglevel)
+        self.logger.setConsole(console)
+        
+        wam_container.setLogger(self.logger)
+
+        self.logger.info("\n\n++++++++++++++++++++PDF WAM++++++++++++++++++++++")
+        self.logger.info("Starting Tingtun PDF WAM server version %s" % (__version__,))
+        self.logger.info('Server bound at port number',port)
+
+        self.cache_mgr = resultscache.getInstance()
+        
+        # self.server = SOAPpy.ThreadingSOAPServer((host,port))
+        # Use forking SOAP server to make sure we don't
+        # hang in case a request causes back-end to hit
+        # an infinite loop. ForkMixin implementation
+        # makes sure that we collect hung child processes
+        # after a while -> Fix for issue #130
+        self.server = ForkingSOAPServer((host,port))        
+        self.server.registerFunction(self.check)
+        self.server.registerFunction(self.checkacc, namespace='eGovMon')
+        self.server.registerFunction(self.getPDFContent, namespace='eGovMon')        
+        
+        self.server.serve_forever()
+
+    def verify_urlsize(self, url):
+        """ Verify the filesize for the URL """
+
+        r=HeadRequest(url)
+
+        try:
+            s=urllib2.urlopen(r)
+            d=dict(s.headers)
+            length=int(d.get('content-length',0))
+            self.logger.info('URL',url,'size is',length,'bytes.')
+            return (length < (config.pdfmaxsize*1024*1024))
+        except Exception, e:
+            self.logger.error(e)
+            
+        return True
+
+    def getPDFContent(self, param0=None):
+        if not (param0.startswith('http') or param0.startswith('file:')):
+            param0 = 'http://' + param0
+
+        return self.__getPDFContent(param0)
+
+    def __getPDFContent(self, url):
+        """ Return downloaded PDF content for already processed URLs.
+        99.99% of the time this would be served from the disk-cache
+        in compressed form """
+
+        # If URL doesn't start with http:// then this
+        # is mostly a file uploaded as URL - try checking
+        # at static prefix
+        pobj = urlparse.urlparse(url)
+        if pobj.path=='':
+            self.logger.warning('Invalid URL, possibly uploaded file test ? Trying at ',self.static_prefix)
+            # Very likely a file uploaded as PDF
+            url = self.static_prefix + url.replace('http://','')
+            
+        fetcher = UrlDownloader(url, self.logger, self.cacheurl, self.cachefolder, self.cachettl)
+        # The interface is still download - caching is taken
+        # care internally to this function. This function doesn't
+        # care if the data is returned fresh or from cache.
+        resultdict = {}
+        
+        if fetcher.download(compress=True):
+            try:
+                actualhdrs = fetcher.headers.split("\n")
+                # Check for Content-type and over-write the corret header value
+                idx, done = -1, False
+                for hdr in actualhdrs:
+                    idx += 1
+                    if len(hdr)==0: continue
+                    key, val = hdr.split(':', 1)
+                    if key.lower() == 'content-type':
+                        actualhdrs[idx] = 'Content-Type: application/pdf\r'
+                        done = True
+                        break
+                if not done:
+                    actualhdrs.append('Content-Type: application/pdf\r')
+                httpheader = '\n'.join([item for item in actualhdrs if item])
+            except:
+                httpheader = fetcher.headers                
+
+            cont = fetcher.data
+            pdfdict = {}
+            pdfdict['downloadok']=True
+            pdfdict['validok']=True
+            pdfdict['error']=''
+
+            pdfdict['result'] = base64.b64encode(cont)
+            try:
+                pdfdict['headers']=httpheader.encode('ascii','replace').decode('ascii','replace')
+            except:
+                pass
+            
+            resultdict = pdfdict
+        else:
+            errdict = {}
+            errdict['downloadok']=False
+            errdict['validok']=False
+            errdict['error']='The PDF file could not be downloaded or fetched from cache'
+            errdict['result']=''
+            resultdict = errdict
+
+        with bench('phpserialize_' + url):
+            result=php_serialize(eval(repr(resultdict).replace('\\r', '')))
+            return result
+
+    def logVisit(self, url, ipaddress=None, referrer=None, forwarded_for=None, useragent=None):
+        """ Log the visit to the database """
+
+        if os.path.isfile(config.dbfile):
+            try:
+                conn = sqlite3.connect(config.dbfile)
+                c = conn.cursor()
+                c.execute("INSERT INTO tracking_visit (url, ip_address, user_agent, referrer, forwarded_for) values('%(url)s', '%(ipaddress)s', '%(useragent)s', '%(referrer)s', '%(forwarded_for)s')" % locals())
+                conn.commit()
+                # Later - Pool connection locally
+                conn.close()
+
+                return True
+            except Exception, e:
+                self.logger.error("===> ERROR logging VISIT <===", e)
+        else:
+            self.logger.error("sqlite database %s not found!" % config.dbfile)
+
+        return False
+                 
+    def checkacc(self, param0=None,
+                 param1=None,
+                 param2=None,
+                 param3=None,
+                 param4=None,
+                 param5=True):
+        """ Check method for the PDF-eAccessibility checker
+        param0: The URL to check
+        param1: The HTTP referrer URL
+        param2: The client IP address (REMOTE_ADDR)
+        param3: HTTP_X_FORWARDED_FOR
+        param4: HTTP USER-AGENT
+        param5: Whether to PHP serialize result
+        
+        """
+
+        self.logger.info("*************new checker session***************")
+        self.logger.info('HTTP referrer =>',param1)
+        self.logger.info('Client IP =>',param2)
+        self.logger.info("User-agent =>", param4)
+
+        b_serial = param5 or False
+        
+        if not (param0.startswith('http') or param0.startswith('file:')):
+            param0 = 'http://' + param0
+
+        self.logger.info("Checking URL =>",param0)
+        
+        # Log the visit if any of these is not None
+        if any([x != None for x in (param0, param1, param2, param3, param4)]):
+            self.logVisit(param0, param2, param1, param3, param4)
+
+        try:
+            # Fix: Trying to cache results or content of uploaded file is
+            # a rather tricky affair. We might return stale or invalid
+            # results so it is better to always NOT cache uploaded files.
+
+            # NOTE: This is no longer a problem since we create a unique temp
+            # file for each uploaded PDF file in the new checker but keeping
+            # the code here for old times sake.
+            cache_flag = 1
+            if param0.startswith(self.static_prefix):
+                cache_flag = 0
+                
+            it = self.__check(param0, cache=cache_flag)
+        except Exception, e:
+            import traceback
+            traceback.print_exc()
+            ret = {'validok': 0, 'error': 'Error in evaluating PDF file'}
+            if b_serial:
+                return php_serialize(ret)
+            else:
+                return ret          
+            
+        if type(it) != type({}):
+            ret = {'downloadok': 0, 'error': 'Invalid WAM result.'}
+            if b_serial:
+                return php_serialize(ret)
+            else:
+                return ret
+
+        # Inconsistent: We should not be looking just for the specific error
+        # "Unsupported" content type but setting invalidCType to 
+        # True, if validok is False
+        if it != None and len(it):
+            self.logger.info("Length of WAM result is",len(it))
+            self.logger.debug("WAM Result => ", it)
+        else:
+            self.logger.warning("WAM Result is empty or None")
+        
+        if it.get('downloadok')==False and it.get('error'):
+            self.logger.error("downloadok is False")
+            it['invalidCType'] = True
+        
+        elif it.get('validok')==False and it.get('error'):
+            self.logger.error("validok is False")           
+            it['invalidCType'] = True
+
+        it['header']=''
+
+        ret = eval(repr(it).replace('\\r', ''))
+        if b_serial: 
+            return php_serialize(ret)
+        else:
+            return ret
+    
+    def check(self, *args, **kwargs):
+        """ Deprecated ? """
+        return repr(self.__check(*args, **kwargs))
+ 
+    def __check(self,
+                url,
+                cont=None,
+                contentType='application/pdf',
+                encoding='utf-8',
+                ruleset=None,
+                httpheader={},
+                compression=None,
+                cache=1):
+        
+        # Ruleset is a list indicating the id of the enabled BWAM/MWAM rules.
+        # ruleset=None means all rules enabled.
+        if ruleset==None:
+            ruleset = ["ALL"]
+        elif type(ruleset) == str and ruleset.upper() == "ALL":
+            ruleset = ["ALL"]
+
+        # Error result
+        errdict = {'result': {}, 'error': ''}
+
+        fetcher = UrlDownloader(url, self.logger, int(cache) and self.cacheurl,
+                                self.cachefolder, self.cachettl)
+
+        if cont==None:
+            # No content passed in, try to download URL directly
+            if fetcher.download():
+                self.logger.info('Downloaded',url,'successfully')
+                httpheader = fetcher.headers
+                cont = fetcher.data
+            else:
+                self.logger.info('Failed to download',url)                
+                errdict['downloadok']=False
+                self.logger.info(fetcher.error)
+                errdict['error']=fetcher.error
+                return errdict
+
+
+        # If the data was obtained from cache, we can as well try for
+        # the results too from the cache
+        if fetcher.getCacheStatus():
+            # Complete result dict is cached
+            resultDict = self.cache_mgr.getResultsCache(url)
+            if resultDict:
+                self.logger.info("Obtained results from results cache =>",url)
+                return resultDict
+            else:
+                self.logger.info("No cached results for",url,"performing evaluation")
+            
+        # Assert that content really is PDF.
+        if cont[0:4].upper()!="%PDF":
+            # This is not PDF, cannot evaluate it with PDF WAM.
+            self.logger.warning("This document is not PDF: "+url)
+            errdict['downloadok']=True
+            errdict['validok']=False
+            errdict['error']='The document is not PDF (does not have valid PDF file signature in the beginning)'
+            # Clean up cache of URL downloader - otherwise we would
+            # keep getting this error possibly even after the URL
+            # is fixed cuz it would return from the cache.
+            fetcher.removeURLCache()
+            
+            return errdict
+
+        if compression=="base64":
+            # Decompress compressed data stream
+            cont=base64.decodestring(cont)
+            
+        resultMap=None
+        resultDict={}
+                
+        self.logger.debug(url,contentType,encoding)
+        self.logger.info('Evaluating:',urllib.unquote(url))
+        
+        if contentType.lower() in ('application/pdf'):
+            # Extract PDF AWAM indicators
+            try:
+                resultMap=pdfAWAM.extractAWAMIndicators(StringIO.StringIO(cont),
+                                                        password='',
+                                                        verbose=False,
+                                                        logger=self.logger)
+            except PdfWamProcessingError, e:
+                # Ticket 127 fix
+                self.logger.warning('Empty resultmap!')
+                # Read file .pdferror and return its contents as error message
+                resultDict['validok'] = False
+                resultDict['error'] = str(e)
+                # Inconsistent: return resultDict right away cuz of error
+                return resultDict
+        
+        # This WAM result format handling is non-standard, but kept for             
+                
+        else:
+            # Other content types not supported.
+            self.logger.error("PDF WAM unsupported contentType: "+contentType)
+            resultDict['validok']=False
+            resultDict['error'] = 'Unsupported content type '+contentType
+            # Inconsistent: return resultDict right away cuz of error
+            return resultDict
+        
+        if resultMap == None:
+            self.logger.error("resultMap from AWAM is NULL. Check if validation failed for "+url)
+            resultDict['validok']=False
+            resultDict['error']='Resultmap from AWAM is NULL, validation failed'
+            # Inconsistent: return resultDict right away cuz of error
+            return resultDict            
+        else:
+            resultDict['validok']=True
+
+        # This WAM result format handling is non-standard, but kept for
+        # backwards compatibility with the EIAO Observatory.
+        # It was initially a hack to save time...
+        # Consider refactoring it in the future.
+        resultDict["result"]=wam_container.bwams(url,resultMap,["pdfbwam_wcag","pdfmwam"],ruleset)
+        # Cache this in memory and disk
+
+        try:
+            # This sometimes cause problems because the original header
+            # might contain data which cant be encoded in ascii, leading
+            # to obscure bugs. E.g: 136
+            headers = fetcher.headers.encode('ascii','replace').decode('ascii','replace')
+            resultDict["header"]=headers
+        except:
+            pass
+
+        try:
+            resultDict["downloadok"]=True
+        except:
+            pass
+
+        # Cache the results
+        self.cache_mgr.setResultsCache(url, resultDict)
+        
+        return resultDict
+
+def main():
+
+    o = optparse.OptionParser(usage=__usage__ % sys.argv[0] )
+    o.add_option('-P','--port',dest='port',help='Port number to listen to',
+                 default=8893)
+    o.add_option('-p','--pid',dest='pid',help='Dummy option(for use by init.d script only)')
+    o.add_option('-d','--daemon',dest='daemon',help="Run as daemon",
+                 default=False, action="store_true")
+    o.add_option('-c', '--nocache',dest='nocache',help='Turn off URL caching',
+                 default=False, action="store_true")
+    o.add_option('-l','--loglevel',
+                 dest='loglevel',help="Set logging level (default: info)",
+                 default='info')    
+    
+    opt, args = o.parse_args()
+
+    options = opt.__dict__
+    daemon = options.get('daemon')
+    # Console logging is on if no daemon mode
+    console = not daemon
+    port = int(options.get('port'))
+    cache = not options.get('nocache')
+    loglevel = options.get('loglevel')
+
+    print "Starting PDF WAM."
+    if daemon:
+        daemonize('/var/run/pdfwam.pid', '/var/log/tingtun/pdfwam/pdfwamstderr.log')
+    else:
+        # Drop privileges anyway!
+        drop_privileges('tingtun','tingtun')
+        pass
+       
+    wss=PDFWAMServer(port=port, cache=cache, console=console, loglevel=loglevel)
+      
+if __name__ == "__main__":
+    main()
+
