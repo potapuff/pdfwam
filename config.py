@@ -9,7 +9,7 @@ pdfwamvalidateimgs=1
 pdfwamignoresinglebitimgs=0
 pdfwamurlcache=1
 pdfwamurlcachefolder='/var/local/cache/tingtun/pdf-wam'
-pdfwamlogfile='/var/log/tingtun/pdfwam/pdfwam.log'
+pdfwamlogfile='pdfwam.log'
 pdfwamurlcachettl=24
 # Maximum size in MB for a PDF file.
 pdfmaxsize=10

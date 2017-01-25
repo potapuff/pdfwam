@@ -31,7 +31,7 @@ from errors import DecryptionFailedException, PdfInitException, PdfWamProcessing
 import pdfwcag
 
 # For logging
-import TingtunUtils.logger as loggermodule
+import logger as loggermodule
 import config
 
 import sys 
