@@ -2,6 +2,8 @@
 Egovmon PDF accessibility checker
 ---------------------------------
 
+Forked from [Tingtun repo](https://gitlab.tingtun.no/eiii_source/pdfwam) engine behind this [EIII PDF Checker](http://checkers.eiii.eu/en/pdfcheck/)
+
 This consists of a command-line PDF checker and
 a SOAP based PDF wam and associated tools.
 
