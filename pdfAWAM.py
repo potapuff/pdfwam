@@ -95,7 +95,6 @@ def extractAWAMIndicators(pdf,
     """ Check whether the given PDF document is accessible """
 
     t = time.time()
-    print 'Log level is set to',config.pdfwamloglevel
 
     if logger == None:
         logger = loggermodule.getLogger('pdfwam', config.pdfwamlogfile, level=config.pdfwamloglevel)

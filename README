@@ -7,6 +7,25 @@ Forked from [Tingtun repo](https://gitlab.tingtun.no/eiii_source/pdfwam) engine 
 This consists of a command-line PDF checker and
 a SOAP based PDF wam and associated tools.
 
+Current status
+--------------
+
+PDF-WAM is dead! It work only on Python 2.7. Web-server did not work because old import. But you still able to use it from CLI.
+
+## Installation
+
+```
+docker build  -t pdfwam .
+mkdir -p pdf
+```
+
+## Usage
+
+```docker run --rm -v %cd%/pdf:/pdf pdfwam /pdf/test.pdf -q -r 2> error.log```
+
+where test.pdf is your pdf file to test in host pdf folder. For Linux replace ```%cd%``` to```$(pwd)``
+
+
 Checker Tools
 -------------
 1. pdfchecker.py - Command-line tool to evaluate a PDF

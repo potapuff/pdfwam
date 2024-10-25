@@ -55,7 +55,7 @@ class LoggerWrapper(object):
     def _prepareConsoleHandlers(self):
         """ Prepare console (stdout/stderr) logging handlers """
         
-        self.shout = logging.StreamHandler(sys.stdout)
+        self.shout = logging.StreamHandler(sys.stderr)
         self.sherr = logging.StreamHandler(sys.stderr)       
         # Formatter - skip debugging for console formatter
         formatter2 = logging.Formatter('%(asctime)s :%(levelname)-8s - %(message)s',

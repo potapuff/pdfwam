@@ -79,7 +79,6 @@ class PdfWCAG(pdfStructureMixin.PdfStructureMixin):
         
         tfail, tpass = 0,0
         for test_name, test_status in self.memo.iteritems():
-            print '{ rule:"'+test_name+'", status:'
             if test_status in (0, 1):
                 if test_status==0:
                     msg='"Fail"'
@@ -97,7 +96,7 @@ class PdfWCAG(pdfStructureMixin.PdfStructureMixin):
                 tpass += succ
 
             descr = self.test_id_desc.get(test_name, 'N.A')
-            print msg + ', description: "'+ descr+'"},\n'
+            print '{ rule:"'+test_name+'", status:'+ msg + ', description: "'+ descr+'"},'
 
         print ']}\n'
 
