@@ -25,6 +25,9 @@ mkdir -p pdf
 
 where test.pdf is your pdf file to test in host pdf folder. For Linux replace ```%cd%``` to```$(pwd)``
 
+## Documentation
+
+[Mapping tests to WCAG rules](https://checkers.eiii.eu/en/pdftests/)
 
 Checker Tools
 -------------
