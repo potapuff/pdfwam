@@ -75,39 +75,32 @@ class PdfWCAG(pdfStructureMixin.PdfStructureMixin):
             del self.memo['wcag.pdf.11']
             del self.memo['wcag.pdf.13']
             
-        print '\n***Test Report***'
+        print '\n{validations:['
         
-        print '-'*80
-        print 'TEST'.ljust(30) + '|' + ' STATUS'.ljust(20) + ' |' + ' DESCRIPTION'
-        print '-'*80
-
         tfail, tpass = 0,0
         for test_name, test_status in self.memo.iteritems():
-            s = test_name.ljust(30)
-            print s + '|',
+            print '{ rule:"'+test_name+'", status:'
             if test_status in (0, 1):
                 if test_status==0:
-                    msg='Fail'
+                    msg='"Fail"'
                     tfail += 1
                 elif test_status==1:
-                    msg='Pass'
+                    msg='"Pass"'
                     tpass += 1
             elif test_status == '':
-                msg='Fail'
+                msg='"Fail"'
                 tfail += 1                
             elif type(test_status) is tuple:
                 fail, succ = test_status
-                msg = 'Fail:%d,' % fail + 'Pass:%d' % succ
+                msg = '[Fail:%d,' % fail + 'Pass:%d]' % succ
                 tfail += fail
                 tpass += succ
-                
-            msg = msg.ljust(20)
-            print msg + '|',
+
             descr = self.test_id_desc.get(test_name, 'N.A')
-            print descr
-            
-        print '-'*80
-        print 'Test summary: %d total tests, %d fail, %d pass' % (tfail+tpass, tfail, tpass)
+            print msg + ', description: "'+ descr+'"},\n'
+
+        print ']}\n'
+
         
     def runAll(self):
         """ Wrapper method for running all wcag 2.0 tests """

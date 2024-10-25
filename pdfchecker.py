@@ -54,8 +54,8 @@ def setupOptions():
                  dest='report',help="Print a report of test results at the end",action="store_true",
                  default=False)
     o.add_option('-l','--loglevel',
-                 dest='loglevel',help="Set logging level (default: info)",
-                 default='info')
+                 dest='loglevel',help="Set logging level (default: info verbose or error for quiet)",
+                 default='error')
 
     options, args = o.parse_args()
     return (args[0], options.__dict__)
@@ -67,7 +67,7 @@ def main():
     quiet = options.get('quiet')
     report = options.get('report')
     developer = options.get('developer')
-    loglevel = options.get('loglevel','info')
+    loglevel = options.get('loglevel',  'error' if quiet else 'info')
 
     if developer:
         print 'Developer option turned on, reporting and messages will be disabled.'
